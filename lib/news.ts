@@ -62,10 +62,23 @@ async function fetchRssArticles(query: NewsQuery): Promise<FetchOutcome> {
       return;
     }
 
-    errors.push(`${feeds[index]?.name ?? "RSS feed"}: ${result.reason instanceof Error ? result.reason.message : "fetch failed"}`);
+    const feed = feeds[index];
+    const errorMessage = result.reason instanceof Error ? result.reason.message : "fetch failed";
+    if (feed && shouldReportFeedError(feed, errorMessage)) {
+      errors.push(`${feed.name}: ${errorMessage}`);
+    }
   });
 
   return { articles, errors };
+}
+
+function shouldReportFeedError(feed: TrustedFeed, errorMessage: string) {
+  // AFP Fact Check frequently blocks server-side RSS requests with HTTP 403.
+  // This is an upstream anti-bot restriction and should not show as a platform error.
+  if (feed.name === "AFP Fact Check" && errorMessage.includes("HTTP 403")) {
+    return false;
+  }
+  return true;
 }
 
 function getConfiguredFeeds() {
