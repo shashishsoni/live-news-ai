@@ -93,7 +93,8 @@ export function AiChatbox({ article, onClose }: AiChatboxProps) {
               title: article.title,
               description: article.description,
               sourceName: article.sourceName,
-              url: article.url
+              url: article.url,
+              language: article.language
             },
             messages: next
           })

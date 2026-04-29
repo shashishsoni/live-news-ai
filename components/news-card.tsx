@@ -27,7 +27,15 @@ export function NewsCard({ article }: { article: NewsArticle }) {
             {article.title}
           </a>
         </h2>
-        {article.description ? <p>{article.description}</p> : <p className="muted-text">No source snippet was provided. Open the original source for context.</p>}
+        {article.description ? (
+          <p lang={article.language === "hi" ? "hi" : article.language === "en" ? "en" : undefined}>{article.description}</p>
+        ) : (
+          <p className="muted-text">
+            {article.language === "hi"
+              ? "इस फ़ीड में संक्षिप्त विवरण उपलब्ध नहीं है। पूर्ण समाचार के लिए मूल स्रोत खोलें।"
+              : "Headline only — this feed did not include a body snippet. Open the original source for full context."}
+          </p>
+        )}
         {article.warning ? <p className="warning-label">{article.warning}</p> : null}
         {article.isOpinion ? <p className="warning-label">Opinion/editorial label detected. Treat separately from factual reporting.</p> : null}
         <dl className="trust-metrics">

@@ -1,4 +1,5 @@
-import type { NewsArticle } from "@/lib/types";
+import { detectArticleLanguage } from "@/lib/text";
+import type { ArticleLanguage, NewsArticle } from "@/lib/types";
 
 const SENSATIONAL_PATTERNS = [
   /you won'?t believe/i,
@@ -10,7 +11,15 @@ const SENSATIONAL_PATTERNS = [
   /destroys/i,
   /slams/i,
   /jaw-dropping/i,
-  /unbelievable/i
+  /unbelievable/i,
+  /चौंकाने/,
+  /सनसनीखेज/,
+  /धमाकेदार/,
+  /पर्दाफाश/,
+  /होश उड़ा/,
+  /धज्जियां/,
+  /हैरान कर/,
+  /खुलासा/
 ];
 
 export function detectSensationalLanguage(input: string) {
@@ -21,7 +30,20 @@ export function detectSensationalLanguage(input: string) {
   };
 }
 
-type AiArticleInput = Pick<NewsArticle, "title" | "description" | "sourceName" | "publishedAt" | "url" | "verificationStatus">;
+type AiArticleInput = Pick<NewsArticle, "title" | "description" | "sourceName" | "publishedAt" | "url" | "verificationStatus"> & {
+  language?: ArticleLanguage;
+};
+
+const LANGUAGE_LABEL: Record<ArticleLanguage, string> = {
+  en: "English",
+  hi: "Hindi",
+  other: "Other (non-English)"
+};
+
+function resolveArticleLanguage(article: { title?: string; description?: string; language?: ArticleLanguage }): ArticleLanguage {
+  if (article.language) return article.language;
+  return detectArticleLanguage(`${article.title ?? ""} ${article.description ?? ""}`);
+}
 
 type AiSummaryResult = {
   ok: boolean;
@@ -49,7 +71,15 @@ PRIMARY DIRECTIVES
 2. Use widely-established public knowledge only when explicitly tagged as background, never as fresh reporting.
 3. If a field cannot be determined from the article, output exactly the token UNKNOWN. Do not guess.
 4. Treat the article as a single source of unknown reliability. Scale skepticism to its Verification-Status.
-5. Output English only. Preserve original-language proper nouns (people, places, organizations, agencies).
+5. Output English only. Do not output Hindi or any other non-Latin script in the generated text. If proper nouns are in Hindi/other scripts, transliterate them to Latin script.
+
+LANGUAGE HANDLING
+- The Article-Language field tells you what script/language the source is in (English, Hindi, or Other).
+- If Article-Language is Hindi or Other:
+  * Translate carefully into formal English. If entity names appear in non-Latin script, transliterate them to Latin script. Do not include the original non-Latin script in the output.
+  * Never invent meaning that the original does not state. If a Hindi sentence is unclear, mark the claim UNKNOWN rather than guessing.
+  * Apply the SAME bias / framing / risk checklist regardless of language. Sensational vocabulary in Hindi (e.g., चौंकाने, सनसनीखेज, धमाकेदार, पर्दाफाश, खुलासा) must be flagged just like English clickbait.
+- If Article-Language is English: do not add translation tags. Treat the text as-is.
 
 ANTI-HALLUCINATION HARD RULES
 - Never assert a date or "today" beyond the article's Published value or the supplied REFERENCE_DATE.
@@ -121,7 +151,13 @@ function buildSummaryUserPrompt(article: AiArticleInput): string {
     ? `MATCHED [${sensational.matches.join(", ")}]`
     : "CLEAN";
   const referenceDate = new Date().toISOString().slice(0, 10);
-  const description = article.description?.trim() ? article.description.trim() : "UNKNOWN";
+  const trimmedDescription = article.description?.trim() ?? "";
+  const description = trimmedDescription ? trimmedDescription : "UNKNOWN";
+  const language = resolveArticleLanguage(article);
+  const languageLabel = LANGUAGE_LABEL[language];
+  const descriptionAvailability = trimmedDescription
+    ? "Present"
+    : "Missing — only the headline is available; do not invent body content.";
 
   return `TASK
 Analyze the article below using the ROLE, RULES, and OUTPUT CONTRACT defined in the system message.
@@ -133,11 +169,13 @@ Title: ${article.title}
 Source: ${article.sourceName}
 Published: ${article.publishedAt}
 Verification-Status: ${article.verificationStatus}
+Article-Language: ${languageLabel}
 URL: ${article.url}
 Description: ${description}
 
 SIGNALS
 Sensational-language-detector: ${sensationalSignal}
+Body-text-availability: ${descriptionAvailability}
 
 Begin output now with the line "SUMMARY".`;
 }
@@ -212,13 +250,19 @@ const CHAT_MODEL_PARAMS = {
   stream: false
 };
 
-function buildDebateSystemPrompt(article: Pick<AiArticleInput, "title" | "sourceName" | "url"> & { description?: string }): string {
+function buildDebateSystemPrompt(article: Pick<AiArticleInput, "title" | "sourceName" | "url"> & { description?: string; language?: ArticleLanguage }): string {
   const sensational = detectSensationalLanguage(`${article.title} ${article.description ?? ""}`);
   const sensationalSignal = sensational.hasSensationalLanguage
     ? `MATCHED [${sensational.matches.join(", ")}]`
     : "CLEAN";
-  const description = article.description?.trim() ? article.description.trim() : "UNKNOWN";
+  const trimmedDescription = article.description?.trim() ?? "";
+  const description = trimmedDescription ? trimmedDescription : "UNKNOWN";
   const referenceDate = new Date().toISOString().slice(0, 10);
+  const language = resolveArticleLanguage(article);
+  const languageLabel = LANGUAGE_LABEL[language];
+  const descriptionAvailability = trimmedDescription
+    ? "Present"
+    : "Missing — only the headline is available; do not invent body content.";
 
   return `ROLE
 You are a senior debate editor embedded in a news analysis product. Your job is to challenge weak reasoning while staying strictly tied to the provided article context.
@@ -227,8 +271,15 @@ OPERATING RULES
 1. Do not invent facts beyond the supplied article context and user-visible chat history.
 2. If an answer depends on missing evidence, say so explicitly instead of guessing.
 3. Do not agree by default. Test assumptions, identify logic gaps, and stress-test conclusions.
-4. Keep answers concise, precise, and plain English.
+4. Keep answers concise and precise.
 5. No markdown, no emojis, no code fences.
+
+LANGUAGE HANDLING
+- The Article-Language field tells you the source language.
+- Detect the user's message language. Reply in the SAME language as the user's question (English -> English, Hindi -> Hindi).
+- When the article is Hindi but the user asks in English (or vice versa), quote the original Hindi phrase verbatim AND give an English gloss in parentheses, e.g., 'दावा है (claims that) ...'. Never silently translate.
+- If the article is Hindi and you are unsure of an exact translation, say so instead of guessing.
+- Apply the same skepticism in any language. Hindi sensational vocabulary (चौंकाने, सनसनीखेज, धमाकेदार, पर्दाफाश, खुलासा, etc.) is treated identically to English clickbait.
 
 ANTI-HALLUCINATION HARD RULES
 - Never fabricate names, dates, numbers, quotes, or legal claims.
@@ -243,7 +294,7 @@ STYLE RULES
 - Stay neutral in tone; be critical in method.
 
 OUTPUT FORMAT (MANDATORY)
-Return plain text with these exact section labels and order:
+Return plain text with these exact section labels and order. Section labels stay in English even when the body is in Hindi:
 
 Response:
 <Direct answer or argument>
@@ -260,14 +311,16 @@ Follow-up:
 ARTICLE CONTEXT
 Title: ${article.title}
 Source: ${article.sourceName}
+Article-Language: ${languageLabel}
 Description: ${description}
+Body-text-availability: ${descriptionAvailability}
 Link: ${article.url}
 Reference-Date: ${referenceDate}
 Sensational-Language-Signal: ${sensationalSignal}`;
 }
 
 export async function chatWithDebateAI(
-  article: Pick<AiArticleInput, "title" | "sourceName" | "url"> & { description?: string },
+  article: Pick<AiArticleInput, "title" | "sourceName" | "url"> & { description?: string; language?: ArticleLanguage },
   messages: ChatMessage[]
 ): Promise<{ ok: boolean; reply?: string; error?: string }> {
   const key = process.env.NVIDIA_API_KEY?.trim();

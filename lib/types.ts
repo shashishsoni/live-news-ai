@@ -3,6 +3,8 @@ export type ContentRegion = NewsRegion | "fact-check";
 
 export type VerificationStatus = "Verified" | "Developing" | "Unverified";
 
+export type ArticleLanguage = "en" | "hi" | "other";
+
 export type FactCheckLabel =
   | "No known dispute"
   | "Needs context"
@@ -33,6 +35,16 @@ export type NewsArticle = {
   confidence: number;
   factCheckLabel: FactCheckLabel;
   warning?: string;
+  /**
+   * Heuristic risk cues detected in headline/description/URL patterns
+   * (e.g., "allegedly", "viral", "no evidence") that reduce confidence.
+   */
+  riskCues?: string[];
+  /**
+   * Detected article language used by scoring and AI prompts to apply
+   * language-aware strictness and avoid silent translation.
+   */
+  language: ArticleLanguage;
   isOpinion: boolean;
   citations: Citation[];
   matchedSources: string[];

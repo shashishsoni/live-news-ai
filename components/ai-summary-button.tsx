@@ -20,7 +20,8 @@ export function AiSummaryButton({ article }: { article: NewsArticle }) {
           sourceName: article.sourceName,
           publishedAt: article.publishedAt,
           url: article.url,
-          verificationStatus: article.verificationStatus
+          verificationStatus: article.verificationStatus,
+          language: article.language
         })
       });
       const data = (await response.json()) as { ok?: boolean; summary?: string; error?: string; provider?: string };

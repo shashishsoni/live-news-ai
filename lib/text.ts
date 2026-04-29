@@ -52,10 +52,52 @@ export function normalizeWhitespace(value = "") {
 export function normalizeTitle(value = "") {
   return normalizeWhitespace(stripHtml(value))
     .toLowerCase()
-    .replace(/[^a-z0-9\s]/g, "")
+    .replace(/[^\p{L}\p{N}\s]/gu, "")
     .replace(/\b(live|updates?|breaking|latest)\b/g, "")
     .replace(/\s+/g, " ")
     .trim();
+}
+
+import type { ArticleLanguage } from "./types";
+
+export type { ArticleLanguage };
+
+export function detectArticleLanguage(value = ""): ArticleLanguage {
+  const text = stripHtml(value);
+  if (!text) {
+    return "en";
+  }
+
+  let latin = 0;
+  let devanagari = 0;
+  let otherLetter = 0;
+
+  for (const char of text) {
+    const code = char.codePointAt(0);
+    if (code === undefined) continue;
+    if ((code >= 0x0041 && code <= 0x007a) || (code >= 0x00c0 && code <= 0x024f)) {
+      latin += 1;
+    } else if (code >= 0x0900 && code <= 0x097f) {
+      devanagari += 1;
+    } else if (/\p{L}/u.test(char)) {
+      otherLetter += 1;
+    }
+  }
+
+  const totalLetters = latin + devanagari + otherLetter;
+  if (totalLetters === 0) {
+    return "en";
+  }
+
+  if (devanagari / totalLetters >= 0.3) {
+    return "hi";
+  }
+
+  if (latin / totalLetters >= 0.7) {
+    return "en";
+  }
+
+  return "other";
 }
 
 export function getDomain(url: string) {

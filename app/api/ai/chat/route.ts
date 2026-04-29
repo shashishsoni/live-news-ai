@@ -7,7 +7,8 @@ const chatSchema = z.object({
     title: z.string(),
     description: z.string().optional(),
     sourceName: z.string(),
-    url: z.string()
+    url: z.string(),
+    language: z.enum(["en", "hi", "other"]).optional()
   }),
   messages: z.array(
     z.object({
