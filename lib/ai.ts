@@ -45,6 +45,14 @@ function resolveArticleLanguage(article: { title?: string; description?: string;
   return detectArticleLanguage(`${article.title ?? ""} ${article.description ?? ""}`);
 }
 
+function enforceEnglishOnlySummary(text: string): string {
+  const withoutDevanagari = text.replace(/[\u0900-\u097F]+/g, "");
+  return withoutDevanagari
+    .replace(/[ \t]{2,}/g, " ")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
 type AiSummaryResult = {
   ok: boolean;
   provider: string;
@@ -52,14 +60,79 @@ type AiSummaryResult = {
   error?: string;
 };
 
-const NVIDIA_BASE_URL = "https://integrate.api.nvidia.com/v1";
-const NVIDIA_MODEL = "meta/llama-3.1-405b-instruct";
-const NVIDIA_PROVIDER = "nvidia:meta/llama-3.1-405b-instruct";
+const GROQ_BASE_URL = "https://api.groq.com/openai/v1";
+const OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1";
+
+const DEFAULT_GROQ_PRIMARY_MODEL = "openai/gpt-oss-120b";
+const DEFAULT_GROQ_FALLBACK_MODELS = ["openai/gpt-oss-20b"] as const;
+const DEFAULT_OPENROUTER_FREE_MODELS = [
+  "nvidia/nemotron-3-super-120b-a12b:free",
+  "openai/gpt-oss-120b:free",
+  "qwen/qwen3.6-plus-preview:free"
+] as const;
+const REQUEST_TIMEOUT_MS = 22000;
+
+function getOpenRouterModels() {
+  const configured = (process.env.OPENROUTER_FREE_MODELS ?? "")
+    .split(",")
+    .map((value) => value.trim())
+    .filter(Boolean);
+  return configured.length ? configured : [...DEFAULT_OPENROUTER_FREE_MODELS];
+}
+
+function getGroqModels() {
+  const primary = process.env.GROQ_PRIMARY_MODEL?.trim() || DEFAULT_GROQ_PRIMARY_MODEL;
+  const configuredFallbacks = (process.env.GROQ_FALLBACK_MODELS ?? "")
+    .split(",")
+    .map((value) => value.trim())
+    .filter(Boolean);
+  const fallbacks = configuredFallbacks.length ? configuredFallbacks : [...DEFAULT_GROQ_FALLBACK_MODELS];
+  return Array.from(new Set([primary, ...fallbacks]));
+}
+
+type ProviderTarget = {
+  provider: "groq" | "openrouter";
+  baseUrl: string;
+  apiKey: string;
+  models: string[];
+};
+
+function getProviderTargets(): ProviderTarget[] {
+  const targets: ProviderTarget[] = [];
+  const groqKey = process.env.GROQ_API_KEY?.trim();
+  const openrouterKey = process.env.OPENROUTER_API_KEY?.trim();
+
+  if (groqKey) {
+    targets.push({
+      provider: "groq",
+      baseUrl: GROQ_BASE_URL,
+      apiKey: groqKey,
+      models: getGroqModels()
+    });
+  }
+
+  if (openrouterKey) {
+    targets.push({
+      provider: "openrouter",
+      baseUrl: OPENROUTER_BASE_URL,
+      apiKey: openrouterKey,
+      models: getOpenRouterModels()
+    });
+  }
+
+  return targets;
+}
+
+function providerLabel(provider: ProviderTarget["provider"], model: string) {
+  return `${provider}:${model}`;
+}
+
+const DEFAULT_PROVIDER_LABEL = providerLabel("groq", DEFAULT_GROQ_PRIMARY_MODEL);
 
 const SUMMARY_MODEL_PARAMS = {
-  temperature: 0.3,
+  temperature: 0.25,
   top_p: 0.9,
-  max_tokens: 900,
+  max_tokens: 1200,
   stream: false
 };
 
@@ -72,6 +145,13 @@ PRIMARY DIRECTIVES
 3. If a field cannot be determined from the article, output exactly the token UNKNOWN. Do not guess.
 4. Treat the article as a single source of unknown reliability. Scale skepticism to its Verification-Status.
 5. Output English only. Do not output Hindi or any other non-Latin script in the generated text. If proper nouns are in Hindi/other scripts, transliterate them to Latin script.
+
+REASONING PROTOCOL (MANDATORY, INTERNAL)
+- Rank evidence strength before writing: direct article fact > quoted statement > metadata > weak inference.
+- Attack assumptions: identify the weakest premise and stress-test it.
+- Check contradictions: if any claim conflicts with another claim, surface conflict explicitly.
+- Calibrate certainty: if evidence is partial, lower certainty and state what is missing.
+- Prefer omission to speculation: remove unsupported claims instead of guessing.
 
 LANGUAGE HANDLING
 - The Article-Language field tells you what script/language the source is in (English, Hindi, or Other).
@@ -104,6 +184,7 @@ BIAS CHECKLIST (apply silently, surface findings in BIAS & FRAMING)
 - Numerical exaggeration without comparison baseline
 - Omitted counter-narrative or affected-party response
 - Conflict-of-interest signals (advertorial, sponsored, opinion mislabeled as news)
+- Certainty-overreach (strong conclusion from weak evidence)
 
 OUTPUT CONTRACT
 Output PLAIN TEXT only. No markdown, no asterisks, no emojis, no code fences. Use the EXACT uppercase labels below, in this exact order, separated by a single blank line. Every section must appear; if a value cannot be determined, write UNKNOWN.
@@ -140,14 +221,14 @@ Reliability: <High | Medium | Low | Unverifiable>
 Reader-action: <one concrete sentence: verify with X, await confirmation from Y, cross-check against Z, treat as opinion, etc.>
 
 AI PERSPECTIVE
-(This section is an explicit editorial reflection. First/second/third-person pronouns are ALLOWED here only. Each line is one sentence, <=25 words, grounded in article evidence. No moralizing, no political endorsement, no invented facts. If the article is too thin to support a perspective, write UNKNOWN.)
-First-person: I read this as <one-sentence editorial take — what stands out, what is weak, what is strong>.
-Second-person: You should <one-sentence concrete reader move — what to verify, what to discount, what to trust, what to watch next>.
-Third-person: <Affected group / market / public> will likely <one-sentence forecast of reception or reaction, or "react cautiously until corroboration emerges">.
+(Write ONE unified overall perspective, not split labels. This is the model's experienced truth-first journalist judgment, combining multiple angles in one coherent view.)
+<2-4 sentences, <=130 words total, grounded in article evidence only. It must naturally connect first-person ("I think"), second-person ("you should"), and third-person ("they/public/stakeholders") viewpoints in one continuous narrative, not as separate bullet points or headings.>
+<Include a practical trust judgment: what should be treated as confirmed now vs what should remain provisional pending corroboration.>
+<Use first-person voice naturally ("I think...") when useful, but do not invent facts, do not moralize, and do not endorse political positions. If evidence is too thin, write UNKNOWN.>
 
 STYLE CONSTRAINTS
-- Total response <= 360 words.
-- No first-person or second-person pronouns OUTSIDE the AI PERSPECTIVE section.
+- Total response <= 520 words.
+- First-person pronouns are allowed only in AI PERSPECTIVE.
 - No filler ("It is important to note", "In conclusion").
 - No content after AI PERSPECTIVE.`;
 
@@ -186,59 +267,72 @@ Body-text-availability: ${descriptionAvailability}
 Begin output now with the line "SUMMARY".`;
 }
 
-export async function summarizeWithNvidiaAi(article: AiArticleInput): Promise<AiSummaryResult> {
+export async function summarizeWithAi(article: AiArticleInput): Promise<AiSummaryResult> {
   if (!article.url || !article.sourceName || !article.title || !article.publishedAt) {
-    return { ok: false, provider: NVIDIA_PROVIDER, error: "Missing article fields." };
+    return { ok: false, provider: DEFAULT_PROVIDER_LABEL, error: "Missing article fields." };
   }
 
   if (article.verificationStatus === "Unverified") {
-    return { ok: false, provider: NVIDIA_PROVIDER, error: "Unverified article." };
+    return { ok: false, provider: DEFAULT_PROVIDER_LABEL, error: "Unverified article." };
   }
-
-  const key = process.env.NVIDIA_API_KEY?.trim();
-
-  if (!key) {
-    return { ok: false, provider: NVIDIA_PROVIDER, error: "NVIDIA_API_KEY not configured." };
+  if (!getProviderTargets().length) {
+    return { ok: false, provider: DEFAULT_PROVIDER_LABEL, error: "No AI provider key configured. Set GROQ_API_KEY or OPENROUTER_API_KEY." };
   }
 
   try {
-    const response = await fetch(`${NVIDIA_BASE_URL}/chat/completions`, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${key}`,
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify({
-        model: NVIDIA_MODEL,
+    const result = await requestChatCompletionWithFallback({
+      messages: [
+        { role: "system", content: SUMMARY_SYSTEM_PROMPT },
+        { role: "user", content: buildSummaryUserPrompt(article) }
+      ],
+      ...SUMMARY_MODEL_PARAMS
+    });
+
+    if (!result.ok) {
+      const status = result.status ?? 504;
+      let errorMsg = `API error ${status}`;
+      if (status === 404) errorMsg = "Model not found";
+      else if (status === 401) errorMsg = "Invalid API key";
+      else if (status === 429) errorMsg = "AI models are busy. Please retry.";
+      else if (status === 504) errorMsg = "AI request timed out. Please retry.";
+      else if (status >= 500) errorMsg = "AI provider server error";
+      return { ok: false, provider: DEFAULT_PROVIDER_LABEL, error: errorMsg };
+    }
+
+    const data = result.data;
+    const text = extractAssistantText(data);
+
+    if (!text) {
+      return { ok: false, provider: DEFAULT_PROVIDER_LABEL, error: "Empty AI response." };
+    }
+
+    let englishOnlySummary = enforceEnglishOnlySummary(text);
+    let provider = providerLabel(result.provider, result.model);
+
+    if (!summaryLooksComplete(englishOnlySummary)) {
+      const retry = await requestChatCompletionWithFallback({
         messages: [
           { role: "system", content: SUMMARY_SYSTEM_PROMPT },
           { role: "user", content: buildSummaryUserPrompt(article) }
         ],
-        ...SUMMARY_MODEL_PARAMS
-      })
-    });
+        ...SUMMARY_MODEL_PARAMS,
+        max_tokens: 1200
+      });
 
-    if (!response.ok) {
-      const status = response.status;
-      let errorMsg = `API error ${status}`;
-      if (status === 404) errorMsg = "Model not found";
-      else if (status === 401) errorMsg = "Invalid API key";
-      else if (status >= 500) errorMsg = "NVIDIA API server error";
-      return { ok: false, provider: NVIDIA_PROVIDER, error: errorMsg };
+      if (retry.ok) {
+        const retryText = extractAssistantText(retry.data);
+        if (retryText) {
+          englishOnlySummary = enforceEnglishOnlySummary(retryText);
+          provider = providerLabel(retry.provider, retry.model);
+        }
+      }
     }
 
-    const data = (await response.json()) as { choices?: Array<{ message?: { content?: string } }> };
-    const text = data.choices?.[0]?.message?.content?.trim();
-
-    if (!text) {
-      return { ok: false, provider: NVIDIA_PROVIDER, error: "Empty AI response." };
-    }
-
-    return { ok: true, provider: NVIDIA_PROVIDER, summary: text };
+    return { ok: true, provider, summary: englishOnlySummary || "SUMMARY\nUNKNOWN" };
   } catch (error) {
     return {
       ok: false,
-      provider: NVIDIA_PROVIDER,
+      provider: DEFAULT_PROVIDER_LABEL,
       error: error instanceof Error ? error.message : "AI request failed"
     };
   }
@@ -250,11 +344,117 @@ export type ChatMessage = {
 };
 
 const CHAT_MODEL_PARAMS = {
-  temperature: 0.45,
+  temperature: 0.4,
   top_p: 0.9,
-  max_tokens: 520,
+  max_tokens: 950,
   stream: false
 };
+
+type ChatCompletionPayload = {
+  messages: Array<{ role: "system" | "user" | "assistant"; content: string }>;
+  temperature: number;
+  top_p: number;
+  max_tokens: number;
+  stream: boolean;
+};
+
+function extractAssistantText(data: { choices?: Array<{ message?: { content?: unknown; reasoning?: unknown }; delta?: { content?: unknown } }> }) {
+  const choice = data.choices?.[0];
+  if (!choice) return "";
+
+  const messageContent = choice.message?.content;
+  if (typeof messageContent === "string") return messageContent.trim();
+
+  if (Array.isArray(messageContent)) {
+    const joined = messageContent
+      .map((part) => {
+        if (typeof part === "string") return part;
+        if (part && typeof part === "object" && "text" in part) {
+          const value = (part as { text?: unknown }).text;
+          return typeof value === "string" ? value : "";
+        }
+        return "";
+      })
+      .join("")
+      .trim();
+    if (joined) return joined;
+  }
+
+  const deltaContent = choice.delta?.content;
+  if (typeof deltaContent === "string" && deltaContent.trim()) return deltaContent.trim();
+
+  const reasoning = choice.message?.reasoning;
+  if (typeof reasoning === "string" && reasoning.trim()) return reasoning.trim();
+
+  return "";
+}
+
+function summaryLooksComplete(text: string) {
+  const requiredSections = ["SUMMARY", "KEY CLAIMS", "CONFIDENCE", "BIAS & FRAMING", "IMPACT", "CRITICAL READ", "VERDICT", "AI PERSPECTIVE"];
+  return requiredSections.every((section) => text.includes(section));
+}
+
+function debateLooksComplete(text: string) {
+  const requiredSections = ["Response:", "Reasoning:", "Counterpoint:", "Follow-up:"];
+  return requiredSections.every((section) => text.includes(section));
+}
+
+async function requestChatCompletionWithFallback(
+  payload: ChatCompletionPayload
+): Promise<
+  | { ok: true; provider: ProviderTarget["provider"]; model: string; data: { choices?: Array<{ message?: { content?: string } }> } }
+  | { ok: false; status?: number }
+> {
+  const targets = getProviderTargets();
+  if (!targets.length) {
+    return { ok: false, status: 401 };
+  }
+
+  let lastStatus: number | undefined;
+
+  for (const target of targets) {
+    for (const model of target.models) {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+
+      try {
+        const headers: Record<string, string> = {
+          Authorization: `Bearer ${target.apiKey}`,
+          "Content-Type": "application/json"
+        };
+        if (target.provider === "openrouter") {
+          headers["HTTP-Referer"] = process.env.NEXT_PUBLIC_SITE_URL?.trim() || "http://localhost:3000";
+          headers["X-Title"] = "Live Update News";
+        }
+
+        const response = await fetch(`${target.baseUrl}/chat/completions`, {
+          method: "POST",
+          headers,
+          signal: controller.signal,
+          body: JSON.stringify({
+            model,
+            ...payload
+          })
+        });
+        clearTimeout(timeout);
+
+        if (response.ok) {
+          const data = (await response.json()) as { choices?: Array<{ message?: { content?: string } }> };
+          return { ok: true, provider: target.provider, model, data };
+        }
+
+        lastStatus = response.status;
+        if (response.status === 401 || response.status === 400 || response.status === 403) {
+          break;
+        }
+      } catch {
+        clearTimeout(timeout);
+      }
+    }
+  }
+
+  return { ok: false, status: lastStatus };
+}
 
 function buildDebateSystemPrompt(article: Pick<AiArticleInput, "title" | "sourceName" | "url"> & { description?: string; language?: ArticleLanguage }): string {
   const sensational = detectSensationalLanguage(`${article.title} ${article.description ?? ""}`);
@@ -280,9 +480,16 @@ OPERATING RULES
 4. Keep answers concise and precise.
 5. No markdown, no emojis, no code fences.
 
+REASONING METHOD (MANDATORY)
+- First identify the strongest claim and the weakest claim in the article context.
+- Separate observed facts from interpretations.
+- Provide one steelman counterpoint (best opposing interpretation, not a strawman).
+- Flag one key uncertainty that would materially change the conclusion.
+- If evidence is insufficient, say UNKNOWN rather than filling gaps.
+
 LANGUAGE HANDLING
 - The Article-Language field tells you the source language.
-- Detect the user's message language. Reply in the SAME language as the user's question (English -> English, Hindi -> Hindi).
+- Reply in English only, regardless of the user's input language.
 - When the article is Hindi but the user asks in English (or vice versa), quote the original Hindi phrase verbatim AND give an English gloss in parentheses, e.g., 'दावा है (claims that) ...'. Never silently translate.
 - If the article is Hindi and you are unsure of an exact translation, say so instead of guessing.
 - Apply the same skepticism in any language. Hindi sensational vocabulary (चौंकाने, सनसनीखेज, धमाकेदार, पर्दाफाश, खुलासा, etc.) is treated identically to English clickbait.
@@ -294,19 +501,20 @@ ANTI-HALLUCINATION HARD RULES
 - Distinguish fact from interpretation.
 
 STYLE RULES
-- Keep each section short (1 to 3 lines).
+- Keep each section compact but complete (2 to 6 lines).
 - Avoid filler phrases.
 - Ask one concrete follow-up question.
 - Stay neutral in tone; be critical in method.
+- Prefer short, high-information sentences over long explanations.
 
 OUTPUT FORMAT (MANDATORY)
-Return plain text with these exact section labels and order. Section labels stay in English even when the body is in Hindi:
+Return plain English text with these exact section labels and order:
 
 Response:
 <Direct answer or argument>
 
 Reasoning:
-<Why this answer is justified by article facts and logic>
+<Why this answer is justified, including strongest evidence, weakest assumption, and key uncertainty>
 
 Counterpoint:
 <Strongest alternative interpretation or objection>
@@ -329,39 +537,52 @@ export async function chatWithDebateAI(
   article: Pick<AiArticleInput, "title" | "sourceName" | "url"> & { description?: string; language?: ArticleLanguage },
   messages: ChatMessage[]
 ): Promise<{ ok: boolean; reply?: string; error?: string }> {
-  const key = process.env.NVIDIA_API_KEY?.trim();
-  if (!key) return { ok: false, error: "NVIDIA_API_KEY not configured." };
+  if (!getProviderTargets().length) {
+    return { ok: false, error: "No AI provider key configured. Set GROQ_API_KEY or OPENROUTER_API_KEY." };
+  }
   const systemPrompt = buildDebateSystemPrompt(article);
 
   // Trim to last 6 messages
   const trimmedMessages = messages.slice(-6);
 
   try {
-    const response = await fetch(`${NVIDIA_BASE_URL}/chat/completions`, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${key}`,
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify({
-        model: NVIDIA_MODEL,
-        messages: [{ role: "system", content: systemPrompt }, ...trimmedMessages],
-        ...CHAT_MODEL_PARAMS
-      })
+    const result = await requestChatCompletionWithFallback({
+      messages: [{ role: "system", content: systemPrompt }, ...trimmedMessages],
+      ...CHAT_MODEL_PARAMS
     });
 
-    if (!response.ok) {
-      return { ok: false, error: `API error ${response.status}` };
+    if (!result.ok) {
+      const status = result.status ?? 504;
+      if (status === 429) return { ok: false, error: "AI models are busy. Please retry." };
+      if (status === 504) return { ok: false, error: "AI request timed out. Please retry." };
+      return { ok: false, error: `API error ${status}` };
     }
 
-    const data = (await response.json()) as { choices?: Array<{ message?: { content?: string } }> };
-    const text = data.choices?.[0]?.message?.content?.trim();
+    const data = result.data;
+    const text = extractAssistantText(data);
 
     if (!text) {
       return { ok: false, error: "Empty AI response." };
     }
 
-    return { ok: true, reply: text };
+    let debateReply = enforceEnglishOnlySummary(text) || "Response:\nUNKNOWN";
+
+    // Retry once with larger completion budget if required sections are truncated.
+    if (!debateLooksComplete(debateReply)) {
+      const retry = await requestChatCompletionWithFallback({
+        messages: [{ role: "system", content: systemPrompt }, ...trimmedMessages],
+        ...CHAT_MODEL_PARAMS,
+        max_tokens: 1100
+      });
+      if (retry.ok) {
+        const retryText = extractAssistantText(retry.data);
+        if (retryText) {
+          debateReply = enforceEnglishOnlySummary(retryText) || debateReply;
+        }
+      }
+    }
+
+    return { ok: true, reply: debateReply };
   } catch (error) {
     return { ok: false, error: error instanceof Error ? error.message : "Chat request failed" };
   }

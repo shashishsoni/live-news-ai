@@ -40,7 +40,7 @@ export default async function HomePage() {
             <div className="hero-proof-strip" aria-label="Verification principles">
               <span>[SRC] original links required</span>
               <span>[SAFE] unverified hidden</span>
-              <span>[AI] NVIDIA source-bound only</span>
+              <span>[AI] source-bound only</span>
             </div>
           </div>
           <aside className="source-console glass-card" aria-label="How to use this news desk">

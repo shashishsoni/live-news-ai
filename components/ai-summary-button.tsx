@@ -1,15 +1,16 @@
 "use client";
 
-import { useState, useTransition } from "react";
+import { useState } from "react";
 import type { NewsArticle } from "@/lib/types";
 import { AiChatbox } from "./ai-chatbox";
 
 export function AiSummaryButton({ article }: { article: NewsArticle }) {
-  const [isPending, startTransition] = useTransition();
+  const [isSummarizing, setIsSummarizing] = useState(false);
   const [message, setMessage] = useState<string>();
 
-  function summarize() {
-    startTransition(async () => {
+  async function summarize() {
+    try {
+      setIsSummarizing(true);
       setMessage("AI processing...");
       const response = await fetch("/api/ai/summarize", {
         method: "POST",
@@ -28,9 +29,13 @@ export function AiSummaryButton({ article }: { article: NewsArticle }) {
       if (data.ok && data.summary) {
         setMessage(data.summary);
       } else {
-        setMessage("AI summary unavailable");
+        setMessage(data.error ? `AI summary unavailable: ${data.error}` : "AI summary unavailable");
       }
-    });
+    } catch {
+      setMessage("AI summary request failed. Please retry.");
+    } finally {
+      setIsSummarizing(false);
+    }
   }
 
   const [isChatOpen, setIsChatOpen] = useState(false);
@@ -38,14 +43,21 @@ export function AiSummaryButton({ article }: { article: NewsArticle }) {
   return (
     <div className="ai-card-action">
       <div className="ai-action-buttons">
-        <button type="button" onClick={summarize} disabled={isPending} className="ai-summary-btn">
-          {isPending ? "..." : "AI summary"}
+        <button type="button" onClick={summarize} disabled={isSummarizing} className="ai-summary-btn">
+          {isSummarizing ? (
+            <span className="ai-summary-loading" aria-live="polite">
+              <span className="ai-summary-spinner" aria-hidden="true" />
+              <span>AI summarizing</span>
+            </span>
+          ) : (
+            "AI summary"
+          )}
         </button>
         <button type="button" onClick={() => setIsChatOpen(!isChatOpen)} className="ai-discuss-btn">
           {isChatOpen ? "Close" : "Discuss"}
         </button>
       </div>
-      {message && !isChatOpen ? <p className="ai-summary-msg">{message}</p> : null}
+      {message ? <p className="ai-summary-msg">{message}</p> : null}
       {isChatOpen ? (
         <div className="ai-chatbox-container">
           <AiChatbox article={article} onClose={() => setIsChatOpen(false)} />

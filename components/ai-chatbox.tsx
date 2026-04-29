@@ -85,6 +85,7 @@ export function AiChatbox({ article, onClose }: AiChatboxProps) {
       setIsLoading(true);
 
       try {
+        const outboundMessages = next.slice(-8);
         const response = await fetch("/api/ai/chat", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -96,7 +97,7 @@ export function AiChatbox({ article, onClose }: AiChatboxProps) {
               url: article.url,
               language: article.language
             },
-            messages: next
+            messages: outboundMessages
           })
         });
 
@@ -151,7 +152,7 @@ export function AiChatbox({ article, onClose }: AiChatboxProps) {
         <div className="chat-title-group">
           <span className="chat-status-dot" aria-hidden="true" />
           <span className="chat-title">[ DEBATE / DISCUSS ]</span>
-          <span className="chat-meta">UNIT-AI / NVIDIA-405B</span>
+          <span className="chat-meta">UNIT-AI / MULTI-PROVIDER</span>
         </div>
         <button
           type="button"

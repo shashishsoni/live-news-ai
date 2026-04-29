@@ -148,7 +148,9 @@ Use the labels as risk signals, not as final truth certificates.
 AI is used for analysis UX, not for generating news inventory.
 
 ### Provider
-- Endpoint: `https://integrate.api.nvidia.com/v1/chat/completions`
+- Endpoint routing:
+  - Primary: `https://api.groq.com/openai/v1/chat/completions`
+  - Fallback: `https://openrouter.ai/api/v1/chat/completions`
 - Model in code: `meta/llama-3.1-405b-instruct`
 
 ### Summary mode (`/api/ai/summarize`)
@@ -192,7 +194,8 @@ NYT_API_KEY=
 MEDIASTACK_KEY=
 
 TRUSTED_RSS_FEEDS=
-NVIDIA_API_KEY=
+GROQ_API_KEY=
+OPENROUTER_API_KEY=
 ```
 
 Notes:
