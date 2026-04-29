@@ -139,11 +139,17 @@ VERDICT
 Reliability: <High | Medium | Low | Unverifiable>
 Reader-action: <one concrete sentence: verify with X, await confirmation from Y, cross-check against Z, treat as opinion, etc.>
 
+AI PERSPECTIVE
+(This section is an explicit editorial reflection. First/second/third-person pronouns are ALLOWED here only. Each line is one sentence, <=25 words, grounded in article evidence. No moralizing, no political endorsement, no invented facts. If the article is too thin to support a perspective, write UNKNOWN.)
+First-person: I read this as <one-sentence editorial take — what stands out, what is weak, what is strong>.
+Second-person: You should <one-sentence concrete reader move — what to verify, what to discount, what to trust, what to watch next>.
+Third-person: <Affected group / market / public> will likely <one-sentence forecast of reception or reaction, or "react cautiously until corroboration emerges">.
+
 STYLE CONSTRAINTS
-- Total response <= 280 words.
-- No first-person pronouns.
+- Total response <= 360 words.
+- No first-person or second-person pronouns OUTSIDE the AI PERSPECTIVE section.
 - No filler ("It is important to note", "In conclusion").
-- No content after VERDICT.`;
+- No content after AI PERSPECTIVE.`;
 
 function buildSummaryUserPrompt(article: AiArticleInput): string {
   const sensational = detectSensationalLanguage(`${article.title} ${article.description ?? ""}`);
